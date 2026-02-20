@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 订阅的 B站主播列表
+model Streamer {
+  id        Int      @id @default(autoincrement())
+  uid       String
+  name      String?
+  groupId   String   // 通知发送到的 QQ 群号
+  isLive    Boolean  @default(false)
+  lastLive  DateTime?
+  updatedAt DateTime @updatedAt
+}
+
+// 智能回复策略配置
+model ReplyRule {
+  id           Int      @id @default(autoincrement())
+  name         String   @default("unnamed rule")
+  priority     Int      @default(0) // 优先级，越高越先匹配
+  matchType    String   // 'EXACT' | 'CONTAINS' | 'REGEX'
+  keyword      String   // 关键词或正则
+  responseType String   // 'TEXT' | 'IMAGE' | 'FUNCTION'
+  content      String   // 回复内容 / 图片链接 / 函数名
+  isEnabled    Boolean  @default(true)
+}
+
+// LLM 持久化记忆上下文
+model ChatSession {
+  id        String        @id // userId 或 groupId
+  messages  ChatMessage[]
+  updatedAt DateTime      @default(now())
+}
+
+model ChatMessage {
+  id          Int         @id @default(autoincrement())
+  sessionId   String
+  role        String      // 'user' | 'assistant' | 'system'
+  content     String
+  createdAt   DateTime    @default(now())
+  
+  session     ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+// 系统全局配置 (Key-Value 存储)
+// 键名示例: 'llm_provider', 'system_prompt', 'spark_config', 'deepseek_config'
+model SystemSetting {
+  key         String   @id
+  value       String   // JSON string or plain text
+  updatedAt   DateTime @updatedAt
+}
+
+// 被忽略的 QQ 用户（机器人不会回应他们的 @）
+model IgnoredUser {
+  id        Int      @id @default(autoincrement())
+  uid       String   @unique
+  note      String?
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexus Command Center</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            900: '#121212',
+                            800: '#1e1e1e',
+                            700: '#2d2d2d',
+                            600: '#3d3d3d'
+                        },
+                        brand: {
+                            500: '#3b82f6', // blue
+                            600: '#2563eb'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Axios -->
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        .log-line {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+        }
+
+        .log-INFO {
+            color: #60a5fa;
+        }
+
+        .log-WARN {
+            color: #facc15;
+        }
+
+        .log-ERROR {
+            color: #f87171;
+        }
+
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: opacity 0.2s;
+        }
+
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
+        }
+    </style>
+</head>
+
+<body class="bg-dark-900 text-gray-200 h-screen overflow-hidden flex">
+    <div id="app" class="flex w-full h-full">
+        <!-- Login Overlay -->
+        <div v-if="!isAuthenticated" class="fixed inset-0 z-[100] bg-dark-900 flex items-center justify-center p-6">
+            <div class="max-w-md w-full bg-dark-800 border border-dark-700 rounded-2xl shadow-2xl p-8 space-y-6">
+                <div class="text-center">
+                    <div
+                        class="w-16 h-16 bg-brand-500/10 text-brand-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="ph-fill ph-lock-key text-3xl"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold text-white">Nexus 身份验证</h2>
+                    <p class="text-gray-400 text-sm mt-2">请在下方输入管理密码以继续</p>
+                </div>
+
+                <div class="space-y-4">
+                    <div class="relative">
+                        <input :type="showPassword ? 'text' : 'password'" v-model="password" @keyup.enter="handleLogin"
+                            placeholder="输入密码..."
+                            class="w-full bg-dark-900 border border-dark-600 rounded-xl pl-4 pr-10 py-3 text-white outline-none focus:border-brand-500 transition">
+                        <button @click="showPassword = !showPassword"
+                            class="absolute right-3 top-3.5 text-gray-500 hover:text-white transition">
+                            <i :class="['ph-fill text-lg', showPassword ? 'ph-eye' : 'ph-eye-slash']"></i>
+                        </button>
+                        <p v-if="loginError" class="text-red-400 text-xs mt-2 pl-1 flex items-center"><i
+                                class="ph-fill ph-warning-circle mr-1"></i> {{ loginError }}</p>
+                    </div>
+                    <button @click="handleLogin" :disabled="isLoggingIn"
+                        class="w-full bg-brand-600 hover:bg-brand-500 disabled:bg-brand-600/50 disabled:cursor-not-allowed text-white font-bold py-3 rounded-xl transition shadow-lg shadow-brand-900/40 flex items-center justify-center">
+                        <i v-if="isLoggingIn" class="ph-bold ph-spinner animate-spin mr-2"></i>
+                        <span>{{ isLoggingIn ? '验证中...' : '验证身份' }}</span>
+                    </button>
+                    <p class="text-center text-[10px] text-gray-500 uppercase tracking-widest font-mono">BiliLiveNexus
+                        Security Core</p>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="isAuthenticated" class="flex w-full h-full">
+
+            <!-- Sidebar -->
+            <aside class="w-64 bg-dark-800 border-r border-dark-700 flex flex-col shadow-2xl z-20">
+                <div class="h-16 flex items-center px-6 border-b border-dark-700">
+                    <i class="ph-fill ph-robot text-brand-500 text-2xl mr-2"></i>
+                    <span class="text-lg font-bold tracking-brand">Nexus Core</span>
+                </div>
+
+                <nav class="flex-1 p-4 space-y-2">
+                    <menu-item icon="ph-gauge" label="仪表盘" :active="tab=='dashboard'"
+                        @click="tab='dashboard'"></menu-item>
+                    <menu-item icon="ph-brain" label="大模型设置" :active="tab=='ai'" @click="tab='ai'"></menu-item>
+                    <menu-item icon="ph-broadcast" label="主播监控" :active="tab=='streamers'"
+                        @click="tab='streamers'"></menu-item>
+                    <menu-item icon="ph-chat-circle-dots" label="回复策略" :active="tab=='rules'"
+                        @click="tab='rules'"></menu-item>
+                    <menu-item icon="ph-user-minus" label="忽略名单" :active="tab=='ignored'"
+                        @click="tab='ignored'"></menu-item>
+                    <menu-item icon="ph-terminal-window" label="系统日志" :active="tab=='logs'"
+                        @click="tab='logs'"></menu-item>
+                </nav>
+
+                <div class="p-4 border-t border-dark-700 space-y-3">
+                    <button @click="logout"
+                        class="w-full h-10 flex items-center justify-center px-4 rounded-lg bg-dark-700 hover:bg-red-500/10 text-gray-400 hover:text-red-400 text-sm transition group border border-transparent hover:border-red-500/20">
+                        <i class="ph-bold ph-lock-key-open mr-2 group-hover:scale-110 transition"></i>
+                        <span>锁定终端</span>
+                    </button>
+                    <div class="bg-dark-700 rounded-lg p-3 flex items-center space-x-3">
+                        <div class="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                            <div class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></div>
+                        </div>
+                        <div>
+                            <div class="text-xs text-gray-400">系统状态</div>
+                            <div class="text-sm font-medium text-green-400">运行中</div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="flex-1 flex flex-col bg-dark-900 relative overflow-hidden">
+                <!-- Topbar -->
+                <header
+                    class="h-16 border-b border-dark-700 px-8 flex justify-between items-center bg-dark-900/90 backdrop-blur z-10">
+                    <h1 class="text-xl font-semibold text-white capitalize">{{ tabNames[tab] }}</h1>
+                    <div class="flex items-center space-x-4">
+                        <span class="text-xs text-gray-500 font-mono">Build v0.1.0</span>
+                        <button
+                            class="w-8 h-8 rounded-full bg-dark-700 flex items-center justify-center hover:bg-dark-600 transition">
+                            <i class="ph ph-bell"></i>
+                        </button>
+                        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-brand-500 to-purple-600"></div>
+                    </div>
+                </header>
+
+                <!-- Scrollable Area -->
+                <div class="flex-1 overflow-y-auto p-8 scrollbar-hide">
+
+                    <!-- DASHBOARD -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'dashboard'" class="space-y-6">
+                            <!-- Stats Cards -->
+                            <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                                <stat-card title="运行时长" :value="stats.uptime" icon="ph-timer"
+                                    color="text-blue-400"></stat-card>
+                                <stat-card title="总消息数" :value="stats.counts?.totalMessages"
+                                    icon="ph-chat-teardrop-text" color="text-purple-400"></stat-card>
+                                <stat-card title="规则命中" :value="stats.counts?.ruleHits" icon="ph-target"
+                                    color="text-green-400"></stat-card>
+                                <stat-card title="AI 调用" :value="stats.counts?.llmCalls" icon="ph-brain"
+                                    color="text-yellow-400"></stat-card>
+                            </div>
+
+                            <!-- Charts Row -->
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-80">
+                                <!-- Memory Usage Chart -->
+                                <div
+                                    class="bg-dark-800 rounded-xl p-5 border border-dark-700 shadow-lg col-span-1 flex flex-col">
+                                    <h3 class="text-sm text-gray-400 font-medium mb-4">内存占用 (MB)</h3>
+                                    <div class="flex-1 relative">
+                                        <canvas id="memoryChart"></canvas>
+                                    </div>
+                                    <div class="mt-4 text-center text-2xl font-bold text-white">{{ stats.memory?.rss }}
+                                    </div>
+                                    <div class="text-center text-xs text-gray-500">Resident Set Size</div>
+                                </div>
+
+                                <!-- Activity Placeholder -->
+                                <div class="bg-dark-800 rounded-xl p-5 border border-dark-700 shadow-lg col-span-2">
+                                    <h3 class="text-sm text-gray-400 font-medium mb-4">近期活动日志</h3>
+                                    <div class="space-y-3">
+                                        <div v-for="(log, i) in recentLogs.slice(0,5)" :key="i"
+                                            class="flex items-start space-x-3 text-sm border-b border-dark-700 pb-2 last:border-0">
+                                            <span class="font-mono text-gray-500 text-xs mt-0.5">{{ log.timestamp
+                                                }}</span>
+                                            <span :class="['text-xs font-bold w-12', `log-${log.level}`]">{{ log.level
+                                                }}</span>
+                                            <span class="text-gray-300 truncate">{{ log.message }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </transition>
+
+                    <!-- AI BRAIN CONFIG -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'ai'" class="space-y-6 max-w-4xl mx-auto">
+                            <!-- Base Config -->
+                            <div class="bg-dark-800 rounded-xl border border-dark-700 p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4 flex items-center"><i
+                                        class="ph-fill ph-sliders mr-2 text-brand-500"></i> 基础设定</h3>
+
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-gray-400 mb-2">选择模型提供商</label>
+                                    <div class="flex space-x-4">
+                                        <button @click="aiConfig.provider='spark'"
+                                            :class="['px-4 py-3 rounded-lg border flex items-center space-x-2 transition', aiConfig.provider==='spark' ? 'border-brand-500 bg-brand-500/10 text-brand-400' : 'border-dark-600 bg-dark-900 text-gray-400 hover:border-gray-500']">
+                                            <i class="ph-fill ph-check-circle" v-if="aiConfig.provider==='spark'"></i>
+                                            <i class="ph ph-circle" v-else></i>
+                                            <span>讯飞星火 (Spark)</span>
+                                        </button>
+                                        <button @click="aiConfig.provider='deepseek'"
+                                            :class="['px-4 py-3 rounded-lg border flex items-center space-x-2 transition', aiConfig.provider==='deepseek' ? 'border-brand-500 bg-brand-500/10 text-brand-400' : 'border-dark-600 bg-dark-900 text-gray-400 hover:border-gray-500']">
+                                            <i class="ph-fill ph-check-circle"
+                                                v-if="aiConfig.provider==='deepseek'"></i>
+                                            <i class="ph ph-circle" v-else></i>
+                                            <span>DeepSeek (v3.2)</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="mb-4">
+                                    <label class="block text-sm font-medium text-gray-400 mb-2">System Prompt
+                                        (人设/提示词)</label>
+                                    <textarea v-model="aiConfig.systemPrompt" rows="4"
+                                        class="w-full bg-dark-900 border border-dark-600 rounded-lg p-3 text-white text-sm focus:border-brand-500 outline-none resize-y"></textarea>
+                                    <p class="text-xs text-gray-500 mt-1">定义 Bot 的性格、说话语气和基本规则。</p>
+                                </div>
+
+                                <div class="flex justify-end">
+                                    <button @click="saveBaseConfig"
+                                        class="bg-brand-600 hover:bg-brand-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition">
+                                        保存基础设定
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Spark Config -->
+                            <div v-if="aiConfig.provider === 'spark'"
+                                class="bg-dark-800 rounded-xl border border-dark-700 p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4 flex items-center"><i
+                                        class="ph-fill ph-key mr-2 text-yellow-500"></i> 讯飞星火密钥配置</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                    <div>
+                                        <label class="block text-xs text-gray-500 mb-1">APPID</label>
+                                        <input v-model="sparkForm.appId" type="text" placeholder="********"
+                                            class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm outline-none focus:border-yellow-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-500 mb-1">API Secret</label>
+                                        <input v-model="sparkForm.apiSecret" type="password" placeholder="已隐藏，如需修改请直接输入"
+                                            class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm outline-none focus:border-yellow-500">
+                                    </div>
+                                    <div>
+                                        <label class="block text-xs text-gray-500 mb-1">API Key</label>
+                                        <input v-model="sparkForm.apiKey" type="password" placeholder="已隐藏，如需修改请直接输入"
+                                            class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm outline-none focus:border-yellow-500">
+                                    </div>
+                                </div>
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm text-gray-400 flex items-center">
+                                        <i
+                                            :class="['ph-fill text-lg mr-1', aiConfig.hasSparkConfig ? 'ph-check-circle text-green-500' : 'ph-warning text-yellow-500']"></i>
+                                        {{ aiConfig.hasSparkConfig ? '密钥已配置' : '未检测到有效密钥' }}
+                                    </span>
+                                    <div class="space-x-2">
+                                        <button @click="testConnection('spark')"
+                                            class="border border-dark-600 hover:bg-dark-700 text-gray-300 px-4 py-2 rounded-lg text-sm transition">
+                                            <i class="ph-fill ph-plugs-connected mr-1"></i> 测试连接
+                                        </button>
+                                        <button @click="saveSparkConfig"
+                                            class="bg-yellow-600 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                                            保存密钥
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- DeepSeek Config -->
+                            <div v-if="aiConfig.provider === 'deepseek'"
+                                class="bg-dark-800 rounded-xl border border-dark-700 p-6">
+                                <h3 class="text-lg font-semibold text-white mb-4 flex items-center"><i
+                                        class="ph-fill ph-key mr-2 text-blue-500"></i> DeepSeek 密钥配置</h3>
+                                <div class="mb-4">
+                                    <label class="block text-xs text-gray-500 mb-1">API Key (sk-xxxxxxxx)</label>
+                                    <input v-model="deepseekForm.apiKey" type="password" placeholder="已隐藏，如需修改请直接输入"
+                                        class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500">
+                                </div>
+                                <div class="mb-4">
+                                    <label class="block text-xs text-gray-500 mb-1">自定义 Base URL (选填)</label>
+                                    <input v-model="deepseekForm.baseUrl" type="text"
+                                        placeholder="https://api.deepseek.com"
+                                        class="w-full bg-dark-900 border border-dark-600 rounded p-2 text-white text-sm outline-none focus:border-blue-500">
+                                </div>
+
+                                <div class="flex justify-between items-center">
+                                    <span class="text-sm text-gray-400 flex items-center">
+                                        <i
+                                            :class="['ph-fill text-lg mr-1', aiConfig.hasDeepseekConfig ? 'ph-check-circle text-green-500' : 'ph-warning text-yellow-500']"></i>
+                                        {{ aiConfig.hasDeepseekConfig ? '密钥已配置' : '未检测到有效密钥' }}
+                                    </span>
+                                    <div class="space-x-2">
+                                        <button @click="testConnection('deepseek')"
+                                            class="border border-dark-600 hover:bg-dark-700 text-gray-300 px-4 py-2 rounded-lg text-sm transition">
+                                            <i class="ph-fill ph-plugs-connected mr-1"></i> 测试连接
+                                        </button>
+                                        <button @click="saveDeepseekConfig"
+                                            class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                                            保存密钥
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </transition>
+
+
+                    <!-- STREAMERS -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'streamers'" class="space-y-6">
+                            <!-- Toolbar -->
+                            <div class="flex space-x-4 bg-dark-800 p-4 rounded-xl border border-dark-700 shadow-lg">
+                                <input v-model="newStreamer.uid" placeholder="主播 RoomID"
+                                    class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg block w-full p-2.5 outline-none focus:border-brand-500">
+                                <input v-model="newStreamer.name" placeholder="备注名称"
+                                    class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg block w-full p-2.5 outline-none focus:border-brand-500">
+                                <input v-model="newStreamer.groupId" placeholder="通知群号"
+                                    class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg block w-full p-2.5 outline-none focus:border-brand-500">
+                                <button @click="addStreamer"
+                                    class="text-white bg-brand-600 hover:bg-brand-500 focus:ring-4 focus:outline-none focus:ring-blue-800 font-medium rounded-lg text-sm px-5 py-2.5 text-center flex items-center whitespace-nowrap">
+                                    <i class="ph-fill ph-plus mr-2"></i> 添加监控
+                                </button>
+                            </div>
+
+                            <!-- Grid -->
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                <div v-for="s in streamers" :key="s.id"
+                                    class="bg-dark-800 rounded-xl border border-dark-700 overflow-hidden hover:border-dark-600 transition group relative">
+                                    <div
+                                        class="h-24 bg-gradient-to-br from-gray-800 to-gray-700 relative overflow-hidden">
+                                        <!-- Animated Status Pill -->
+                                        <div class="absolute top-4 right-4 flex items-center">
+                                            <div v-if="s.isLive"
+                                                class="flex items-center space-x-1.5 bg-red-500/20 text-red-400 px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider border border-red-500/30 backdrop-blur-md">
+                                                <span class="relative flex h-2 w-2">
+                                                    <span
+                                                        class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                                                    <span
+                                                        class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                                                </span>
+                                                <span>LIVE</span>
+                                            </div>
+                                            <div v-else
+                                                class="flex items-center space-x-1.5 bg-gray-900/40 text-gray-400 px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider border border-white/5 backdrop-blur-md">
+                                                <i class="ph-fill ph-moon"></i>
+                                                <span>OFFLINE</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="p-5 pt-0 relative">
+                                        <div
+                                            class="w-16 h-16 rounded-full bg-dark-700 border-4 border-dark-800 -mt-8 flex items-center justify-center text-2xl mb-3">
+                                            📺
+                                        </div>
+                                        <h3 class="text-lg font-bold text-white">{{ s.name }}</h3>
+                                        <p class="text-sm text-gray-400 mb-4">UID: {{ s.uid }}</p>
+
+                                        <div class="flex items-center text-xs text-gray-500 bg-dark-900 p-2 rounded">
+                                            <i class="ph-fill ph-users mr-2"></i> 通知群: {{ s.groupId }}
+                                        </div>
+
+                                        <button @click="deleteStreamer(s.id)"
+                                            class="absolute bottom-5 right-5 text-gray-600 hover:text-red-500 transition opacity-0 group-hover:opacity-100">
+                                            <i class="ph-fill ph-trash text-lg"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div v-if="streamers.length === 0" class="text-center text-gray-500 py-10">
+                                暂无订阅主播，请在上方添加
+                            </div>
+                        </div>
+                    </transition>
+
+                    <!-- RULES -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'rules'" class="space-y-6">
+                            <!-- Add Rule Panel -->
+                            <div class="bg-dark-800 p-6 rounded-xl border border-dark-700 shadow-lg">
+                                <h3 class="text-white font-semibold mb-4 flex items-center"><i
+                                        class="ph-fill ph-magic-wand mr-2 text-purple-500"></i> 新增回复策略</h3>
+                                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                                    <input v-model="newRule.name" placeholder="策略名称 (如: 菜单)"
+                                        class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg p-2.5 outline-none focus:border-purple-500">
+                                    <select v-model="newRule.matchType"
+                                        class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg p-2.5 outline-none focus:border-purple-500">
+                                        <option value="CONTAINS">包含关键词 (Contains)</option>
+                                        <option value="EXACT">完全匹配 (Exact)</option>
+                                        <option value="REGEX">正则表达式 (Regex)</option>
+                                    </select>
+                                    <input v-model="newRule.keyword" placeholder="关键词或正则内容"
+                                        class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg p-2.5 outline-none focus:border-purple-500">
+                                    <select v-model="newRule.type"
+                                        class="bg-dark-900 border border-dark-600 text-white text-sm rounded-lg p-2.5 outline-none focus:border-purple-500">
+                                        <option value="TEXT">回复文本</option>
+                                        <option value="IMAGE">回复图片</option>
+                                    </select>
+                                </div>
+                                <textarea v-model="newRule.content" rows="2" placeholder="回复的内容，如果是图片则填写 http URL..."
+                                    class="block w-full text-sm bg-dark-900 border border-dark-600 text-white rounded-lg p-2.5 outline-none focus:border-purple-500 resize-none"></textarea>
+                                <div class="mt-4 flex justify-end">
+                                    <button @click="addRule"
+                                        class="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white text-sm font-medium rounded-lg transition shadow-lg shadow-purple-900/20">保存策略</button>
+                                </div>
+                            </div>
+
+                            <!-- Rules List -->
+                            <div class="space-y-3">
+                                <div v-for="r in rules" :key="r.id"
+                                    class="bg-dark-800 p-4 rounded-xl border border-dark-700 flex items-center justify-between hover:bg-dark-750 transition">
+                                    <div class="flex items-center space-x-4">
+                                        <div
+                                            class="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-purple-400">
+                                            <i
+                                                :class="r.responseType === 'IMAGE' ? 'ph-fill ph-image' : 'ph-fill ph-chat-text'"></i>
+                                        </div>
+                                        <div>
+                                            <div class="flex items-center space-x-2">
+                                                <span class="text-white font-medium">{{ r.name }}</span>
+                                                <span class="text-xs px-2 py-0.5 rounded bg-dark-600 text-gray-300">{{
+                                                    r.matchType }}</span>
+                                            </div>
+                                            <div class="text-sm text-gray-400 font-mono mt-0.5">M: "{{ r.keyword }}" ->
+                                                R:
+                                                {{ r.content }}</div>
+                                        </div>
+                                    </div>
+                                    <button @click="deleteRule(r.id)" class="text-gray-600 hover:text-red-500 p-2"><i
+                                            class="ph-bold ph-x"></i></button>
+                                </div>
+                            </div>
+                        </div>
+                    </transition>
+
+                    <!-- IGNORED USERS -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'ignored'" class="space-y-6">
+                            <div
+                                class="bg-dark-800 p-6 rounded-2xl shadow-xl shadow-brand-900/10 border border-dark-700">
+                                <h2 class="text-lg font-bold text-white mb-2 flex items-center">
+                                    <i class="ph-fill ph-user-minus text-brand-500 mr-2"></i> 添加忽略用户
+                                </h2>
+                                <p class="text-sm text-gray-400 mb-6">被添加到此名单的用户，无论如何@机器人，机器人都不会做出回应。</p>
+
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                    <div class="md:col-span-2">
+                                        <label class="block text-sm font-medium text-gray-400 mb-1">QQ 号 / 用户
+                                            UID</label>
+                                        <input type="text" v-model="newIgnoredUser.uid"
+                                            placeholder="输入用户的精确 QQ 号或 UID..."
+                                            class="block w-full text-sm bg-dark-900 border border-dark-600 text-white rounded-lg p-2.5 outline-none focus:border-brand-500 transition">
+                                    </div>
+                                    <div class="md:col-span-1">
+                                        <label class="block text-sm font-medium text-gray-400 mb-1">备注信息</label>
+                                        <input type="text" v-model="newIgnoredUser.note" placeholder="选填..."
+                                            class="block w-full text-sm bg-dark-900 border border-dark-600 text-white rounded-lg p-2.5 outline-none focus:border-brand-500 transition">
+                                    </div>
+                                </div>
+                                <div class="mt-4 flex justify-end">
+                                    <button @click="addIgnoredUser"
+                                        class="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition shadow-lg shadow-brand-900/20">添加至名单</button>
+                                </div>
+                            </div>
+
+                            <div class="space-y-3">
+                                <div v-for="u in ignoredUsers" :key="u.id"
+                                    class="bg-dark-800 p-4 rounded-xl border border-dark-700 flex items-center justify-between hover:bg-dark-750 transition">
+                                    <div class="flex items-center space-x-4">
+                                        <div
+                                            class="w-10 h-10 rounded-full bg-dark-700 flex items-center justify-center text-brand-400">
+                                            <i class="ph-bold ph-alien"></i>
+                                        </div>
+                                        <div>
+                                            <div class="text-white font-medium tracking-widest font-mono">{{ u.maskedUid
+                                                }}</div>
+                                            <div class="text-sm text-gray-400">{{ u.note || '无备注' }}</div>
+                                        </div>
+                                    </div>
+                                    <button @click="deleteIgnoredUser(u.id)"
+                                        class="text-gray-600 hover:text-red-500 p-2"><i
+                                            class="ph-bold ph-trash"></i></button>
+                                </div>
+                                <div v-if="ignoredUsers.length === 0"
+                                    class="text-center py-10 text-gray-500 border border-dashed border-dark-600 rounded-xl">
+                                    <i class="ph-thin ph-mask-happy text-4xl mb-2"></i>
+                                    <p>当前没有忽略任何用户</p>
+                                </div>
+                            </div>
+                        </div>
+                    </transition>
+
+                    <!-- LOGS -->
+                    <transition name="fade" mode="out-in">
+                        <div v-if="tab === 'logs'"
+                            class="h-full flex flex-col bg-black rounded-xl border border-dark-700 shadow-2xl overflow-hidden font-mono text-sm max-h-[80vh]">
+                            <div
+                                class="bg-dark-800 px-4 py-2 border-b border-dark-700 flex justify-between items-center">
+                                <span class="text-xs text-gray-400">SYSTEM CONSOLE</span>
+                                <div class="flex space-x-1">
+                                    <span class="w-3 h-3 rounded-full bg-red-500"></span>
+                                    <span class="w-3 h-3 rounded-full bg-yellow-500"></span>
+                                    <span class="w-3 h-3 rounded-full bg-green-500"></span>
+                                </div>
+                            </div>
+                            <div class="flex-1 overflow-y-auto p-4 space-y-1" id="log-container">
+                                <div v-for="(log, i) in recentLogs" :key="i" class="break-all hover:bg-white/5 py-0.5">
+                                    <span class="text-gray-600 mr-2">[{{ log.timestamp }}]</span>
+                                    <span :class="['font-bold mr-2 w-12 inline-block', `log-${log.level}`]">{{ log.level
+                                        }}</span>
+                                    <span class="text-gray-500 mr-2">[{{ log.source }}]</span>
+                                    <span class="text-gray-300">{{ log.message }}</span>
+                                </div>
+                                <div v-if="recentLogs.length === 0" class="text-gray-600 italic">等待日志输入...</div>
+                            </div>
+                        </div>
+                    </transition>
+
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Components -->
+    <script>
+        const MenuItem = {
+            props: ['icon', 'label', 'active'],
+            template: `
+            <button :class="['w-full flex items-center px-4 py-3 rounded-lg transition-all', active ? 'bg-brand-600 text-white shadow-lg shadow-brand-900/20' : 'text-gray-400 hover:bg-dark-700 hover:text-white']">
+                <i :class="['ph-fill text-xl mr-3', icon]"></i>
+                <span class="text-sm font-medium">{{ label }}</span>
+            </button>
+            `
+        };
+
+        const StatCard = {
+            props: ['title', 'value', 'icon', 'color'],
+            template: `
+            <div class="bg-dark-800 rounded-xl p-5 border border-dark-700 relative overflow-hidden group">
+                <div :class="['absolute right-0 top-0 p-4 opacity-10 group-hover:scale-110 transition duration-500', color]">
+                    <i :class="['ph-fill text-6xl', icon]"></i>
+                </div>
+                <div>
+                    <div class="text-sm text-gray-400 mb-1">{{ title }}</div>
+                    <div class="text-2xl font-bold text-white tracking-tight">{{ value || '-' }}</div>
+                </div>
+            </div>
+            `
+        };
+
+        const { createApp, ref, onMounted, watch, nextTick } = Vue;
+
+        createApp({
+            components: { MenuItem, StatCard },
+            setup() {
+                const tab = ref('dashboard');
+                const tabNames = { dashboard: '系统概览', streamers: '主播监控', rules: '核心策略', logs: '运行日志', ai: '大模型设置', ignored: '忽略名单' };
+
+                // Auth
+                const isAuthenticated = ref(false);
+                const isLoggingIn = ref(false);
+                const showPassword = ref(false);
+                const password = ref('');
+                const loginError = ref('');
+                const authToken = ref(localStorage.getItem('nexus_token') || '');
+
+                // Configure Axios
+                axios.defaults.headers.common['Authorization'] = authToken.value;
+                axios.interceptors.response.use(
+                    response => response,
+                    error => {
+                        if (error.response && error.response.status === 401) {
+                            logout();
+                        }
+                        return Promise.reject(error);
+                    }
+                );
+
+                const handleLogin = async () => {
+                    if (isLoggingIn.value) return;
+                    isLoggingIn.value = true;
+                    loginError.value = '';
+
+                    // Simulate a small delay for better UX
+                    await new Promise(r => setTimeout(r, 600));
+
+                    try {
+                        const res = await axios.post('/api/login', { password: password.value });
+                        authToken.value = res.data.token || 'N/A';
+                        localStorage.setItem('nexus_token', authToken.value);
+                        axios.defaults.headers.common['Authorization'] = authToken.value;
+                        isAuthenticated.value = true;
+                        password.value = ''; // Clear password
+                        loadData();
+                        refreshDashboard();
+                    } catch (e) {
+                        loginError.value = '密码错误';
+                        // Shake effect could be added here
+                    } finally {
+                        isLoggingIn.value = false;
+                    }
+                };
+
+                const logout = () => {
+                    isAuthenticated.value = false;
+                    authToken.value = '';
+                    localStorage.removeItem('nexus_token');
+                    loginError.value = '';
+                };
+
+                const checkAuth = async () => {
+                    // Test token if exists
+                    if (authToken.value) {
+                        try {
+                            await axios.get('/api/stats');
+                            isAuthenticated.value = true;
+                        } catch (e) {
+                            isAuthenticated.value = false;
+                        }
+                    } else {
+                        isAuthenticated.value = false;
+                    }
+                };
+
+                // Data
+                const stats = ref({});
+                const streamers = ref([]);
+                const rules = ref([]);
+                const recentLogs = ref([]);
+                const ignoredUsers = ref([]);
+
+                // AI Config
+                const aiConfig = ref({ provider: 'spark', systemPrompt: '', hasSparkConfig: false, hasDeepseekConfig: false });
+                const sparkForm = ref({ appId: '', apiSecret: '', apiKey: '' });
+                const deepseekForm = ref({ apiKey: '', baseUrl: '' });
+
+                // Forms
+                const newStreamer = ref({ uid: '', name: '', groupId: '' });
+                const newRule = ref({ name: '', matchType: 'CONTAINS', keyword: '', type: 'TEXT', content: '' });
+                const newIgnoredUser = ref({ uid: '', note: '' });
+
+                // Charts
+                let memoryChart = null;
+
+                const refreshDashboard = async () => {
+                    // Update Stats
+                    try {
+                        const s = await axios.get('/api/stats');
+                        stats.value = s.data;
+
+                        // Update Chart
+                        const canvas = document.getElementById('memoryChart');
+                        if (tab.value === 'dashboard' && canvas) {
+                            // Extract numbers
+                            const rss = parseFloat(stats.value.memory?.rss) || 0;
+                            const heap = parseFloat(stats.value.memory?.heapUsed) || 0;
+
+                            // If chart exists but canvas is different (v-if recreation), destroy it
+                            if (memoryChart && memoryChart.canvas !== canvas) {
+                                memoryChart.destroy();
+                                memoryChart = null;
+                            }
+
+                            if (!memoryChart) {
+                                const ctx = canvas.getContext('2d');
+                                memoryChart = new Chart(ctx, {
+                                    type: 'doughnut',
+                                    data: {
+                                        labels: ['RSS (MB)', 'Heap (MB)', 'Free (Alloc)'],
+                                        datasets: [{
+                                            data: [rss, heap, 100],
+                                            backgroundColor: ['#3b82f6', '#8b5cf6', '#1e1e1e'],
+                                            borderWidth: 0
+                                        }]
+                                    },
+                                    options: {
+                                        responsive: true,
+                                        maintainAspectRatio: false,
+                                        plugins: { legend: { display: false } },
+                                        cutout: '75%'
+                                    }
+                                });
+                            } else {
+                                memoryChart.data.datasets[0].data = [rss, heap, Math.max(0, 200 - rss)]; // Fake max 200 for visual
+                                memoryChart.update();
+                            }
+                        } else if (memoryChart) {
+                            // Destroy chart if not on dashboard to free resources
+                            memoryChart.destroy();
+                            memoryChart = null;
+                        }
+                    } catch (e) { }
+
+                    // Update Logs
+                    try {
+                        const l = await axios.get('/api/logs');
+                        recentLogs.value = l.data;
+                        // Auto scroll
+                        if (tab.value === 'logs') {
+                            nextTick(() => {
+                                const el = document.getElementById('log-container');
+                                if (el) el.scrollTop = el.scrollHeight;
+                            });
+                        }
+                    } catch (e) { }
+                }
+
+                const loadData = async () => {
+                    try {
+                        const s = await axios.get('/api/streamers');
+                        streamers.value = s.data;
+                        const r = await axios.get('/api/rules');
+                        rules.value = r.data;
+                        const ig = await axios.get('/api/ignored-users');
+                        ignoredUsers.value = ig.data;
+
+                        // Load AI Config
+                        const ac = await axios.get('/api/config/llm');
+                        aiConfig.value = ac.data;
+                    } catch (e) { }
+                }
+
+                // AI Actions
+                const saveBaseConfig = async () => {
+                    await axios.post('/api/config/llm/base', {
+                        provider: aiConfig.value.provider,
+                        systemPrompt: aiConfig.value.systemPrompt
+                    });
+                    alert('基础设置已保存');
+                    loadData();
+                }
+                const saveSparkConfig = async () => {
+                    await axios.post('/api/config/llm/spark', sparkForm.value);
+                    sparkForm.value = { appId: '', apiSecret: '', apiKey: '' };
+                    alert('Spark 密钥已更新');
+                    loadData();
+                }
+                const saveDeepseekConfig = async () => {
+                    await axios.post('/api/config/llm/deepseek', deepseekForm.value);
+                    deepseekForm.value = { apiKey: '', baseUrl: '' };
+                    alert('DeepSeek 密钥已更新');
+                    loadData();
+                }
+                const testConnection = async (provider) => {
+                    try {
+                        const res = await axios.post('/api/config/llm/test', { provider });
+                        if (res.data.success) alert('连接测试成功！');
+                        else alert('连接失败，请检查密钥或网络配置。');
+                    } catch (e) {
+                        alert('连接测试出错');
+                    }
+                }
+
+
+                // Actions
+                const addStreamer = async () => {
+                    if (!newStreamer.value.uid || !newStreamer.value.groupId) {
+                        alert('请填写完整的 UID 和群号');
+                        return;
+                    }
+                    try {
+                        await axios.post('/api/streamers', newStreamer.value);
+                        newStreamer.value = { uid: '', name: '', groupId: '' };
+                        loadData();
+                        alert('添加成功');
+                    } catch (e) {
+                        console.error(e);
+                        alert('保存失败，请检查控制台或后端日志');
+                    }
+                };
+                const deleteStreamer = async (id) => {
+                    if (confirm('确定要删除吗？')) {
+                        await axios.delete(`/api/streamers/${id}`).then(loadData);
+                    }
+                };
+
+                const addRule = async () => {
+                    if (!newRule.value.keyword) {
+                        alert('请填写关键词');
+                        return;
+                    }
+                    try {
+                        await axios.post('/api/rules', newRule.value);
+                        newRule.value = { name: '', matchType: 'CONTAINS', keyword: '', type: 'TEXT', content: '' };
+                        loadData();
+                        alert('添加成功');
+                    } catch (e) {
+                        alert('添加失败');
+                    }
+                };
+                const deleteRule = async (id) => {
+                    if (confirm('确定要删除吗？')) {
+                        await axios.delete(`/api/rules/${id}`).then(loadData);
+                    }
+                };
+
+                const addIgnoredUser = async () => {
+                    if (!newIgnoredUser.value.uid) {
+                        alert('请填写用户的详细 UID / QQ号');
+                        return;
+                    }
+                    try {
+                        await axios.post('/api/ignored-users', newIgnoredUser.value);
+                        newIgnoredUser.value = { uid: '', note: '' };
+                        loadData();
+                        alert('添加成功');
+                    } catch (e) {
+                        alert('添加失败');
+                    }
+                };
+                const deleteIgnoredUser = async (id) => {
+                    if (confirm('确定要删除该忽略人员吗？')) {
+                        await axios.delete(`/api/ignored-users/${id}`).then(loadData);
+                    }
+                };
+
+                // Lifecycle
+                let interval;
+                onMounted(() => {
+                    checkAuth();
+                    loadData();
+                    refreshDashboard();
+                    interval = setInterval(refreshDashboard, 2000); // Poll logs every 2s
+                });
+
+                return {
+                    tab, tabNames, stats, streamers, rules, recentLogs, ignoredUsers,
+                    newStreamer, newRule, newIgnoredUser,
+                    aiConfig, sparkForm, deepseekForm,
+                    addStreamer, deleteStreamer, addRule, deleteRule, addIgnoredUser, deleteIgnoredUser,
+                    saveBaseConfig, saveSparkConfig, saveDeepseekConfig, testConnection,
+                    isAuthenticated, isLoggingIn, showPassword, password, loginError, handleLogin, logout
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>
