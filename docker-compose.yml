@@ -1,44 +1,33 @@
+# BiliLiveNexus 服务编排
 version: "3"
 
 services:
   # 后端 API + Bot 核心
   backend:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile
     container_name: nexus-core
+    network_mode: bridge
     ports:
       - "5555:5555"
     environment:
-      - DATABASE_URL=file:../data/nexus.db
-      - NAPCAT_URL=${NAPCAT_URL} # NapCat http api地址
+      # 数据库路径（容器内 /app/data 挂载宿主机 ./data）
+      - DATABASE_URL=file:/app/data/nexus.db
+      # NapCat QQ 机器人配置
+      - NAPCAT_URL=${NAPCAT_URL}
       - NAPCAT_TOKEN=${NAPCAT_TOKEN}
       - BOT_QQ_ID=${BOT_QQ_ID}
+      # 讯飞星火初始配置（可选，建议部署后在 WebUI 修改）
       - XF_APPID=${XF_APPID}
       - XF_API_SECRET=${XF_API_SECRET}
       - XF_API_KEY=${XF_API_KEY}
-      - NEXUS_PASSWORD=${NEXUS_PASSWORD} # Web 管理界面密码
+      # 管理密码与安全密钥
+      - NEXUS_PASSWORD=${NEXUS_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
     volumes:
+      # 持久化数据库与日志
       - ./data:/app/data
       - ./logs:/app/logs
     restart: unless-stopped
-    networks:
-      - nexus-network
-
-#  # 前端 WebUI
-#  frontend:
-#    build:
-#      context: ./frontend
-#      dockerfile: Dockerfile
-#    container_name: nexus-web
-#    ports:
-#      - "80:80"
-#    depends_on:
-#      - backend
-#    restart: unless-stopped
-#    networks:
-#      - nexus-network
-
-networks:
-  nexus-network:
-    driver: bridge
