@@ -6,7 +6,7 @@
 
 ---
 
-## ER 关系图（文本）
+## ER 关系图
 
 ```
 ┌─────────────┐       ┌──────────────┐       ┌─────────────┐
@@ -14,13 +14,17 @@
 │─────────────│       │──────────────│       │─────────────│
 │ id (PK)     │       │ id (PK)      │       │ id (PK)     │
 │ uid         │       │ name         │       │ uid (UNIQUE)│
-│ name?       │       │ priority     │       │ note?       │
-│ groupId     │       │ matchType    │       │ createdAt   │
-│ isLive      │       │ keyword      │       └─────────────┘
-│ lastLive?   │       │ responseType │
-│ updatedAt   │       │ content      │
-└─────────────┘       │ isEnabled    │
-                      └──────────────┘
+│ roomId?     │       │ priority     │       │ note?       │
+│ uname?      │       │ matchType    │       │ createdAt   │
+│ name?       │       │ keyword      │       └─────────────┘
+│ title?      │       │ responseType │
+│ description?│       │ content      │
+│ cover?      │       │ isEnabled    │
+│ groupId     │       └──────────────┘
+│ isLive      │
+│ lastLive?   │
+│ updatedAt   │
+└─────────────┘
 
 ┌──────────────┐  1:N  ┌─────────────┐
 │ ChatSession  │──────▶│ ChatMessage │
@@ -47,22 +51,29 @@
 
 ### 1. Streamer（主播订阅表）
 
-存储需要监控的 B 站主播信息，开播时向关联 QQ 群发送通知。
+存储需要监控的 B 站主播信息。系统启动时自动为每个唯一房间建立弹幕 WebSocket 连接。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
 | `id` | Int | PK, 自增 | 主键 |
-| `uid` | String | — | B 站房间号 / 主播 UID |
-| `name` | String? | 可空 | 主播备注名 |
+| `uid` | String | — | 用户输入的 B 站房间号（可能是短号） |
+| `roomId` | String? | 可空 | 解析后的真实房间号（系统自动填充，用于弹幕 WS 连接） |
+| `uname` | String? | 可空 | UP 主名称（B 站 API 自动获取） |
+| `name` | String? | 可空 | 用户自定义备注名 |
+| `title` | String? | 可空 | 当前直播间标题（自动更新） |
+| `description` | String? | 可空 | 直播间简介 |
+| `cover` | String? | 可空 | 直播间封面图 URL |
 | `groupId` | String | — | 通知目标 QQ 群号 |
 | `isLive` | Boolean | 默认 false | 当前是否在播 |
-| `lastLive` | DateTime? | 可空 | 最近一次开播时间（用于 5 分钟冷却防刷） |
+| `lastLive` | DateTime? | 可空 | 最前一次开播时间（用于 5 分钟冷却防刷） |
 | `updatedAt` | DateTime | 自动更新 | 记录最后更新时间 |
 
 **业务规则：**
-- 同一 `uid` 可关联多个 `groupId`（一个主播通知多个群）
-- `lastLive` 用于 Webhook 去重：5 分钟内重复开播事件会被忽略
-- `isLive` 在开播/下播时自动切换
+- 同一 `uid` 可关联多个 `groupId`（一个主播通知多个群），系统只建一个 WS 连接
+- `uid` 是用户输入（可能是短号），`roomId` 是通过 B 站 API 解析的真实房间号
+- `uname`、`title`、`description`、`cover` 在添加时通过 B 站 API 自动获取，开播时自动刷新
+- `lastLive` 用于去重：5 分钟内重复开播事件会被忽略
+- `isLive` 在开播/下播时由 NotificationService 自动切换
 
 ---
 
@@ -81,7 +92,7 @@
 | `content` | String | — | 回复内容（文本 / 图片链接 / 函数名） |
 | `isEnabled` | Boolean | 默认 true | 是否启用 |
 
-**匹配优先级：**
+**匹配逻辑：**
 1. 按 `priority` 降序排列逐条匹配
 2. 支持多条规则同时命中，结果合并发送
 3. 命中任意规则后不再调用 LLM
@@ -113,14 +124,13 @@
 
 **关联关系：**
 - `sessionId` 外键关联 `ChatSession.id`，级联删除
-- 会话删除时自动清除所有关联消息
 - 取最近 5~10 条消息作为 LLM 上下文
 
 ---
 
 ### 5. SystemSetting（全局配置表）
 
-Key-Value 结构的系统配置存储，用于持久化 LLM 密钥、系统 Prompt 等。
+Key-Value 结构的系统配置存储。
 
 | 字段 | 类型 | 约束 | 说明 |
 |------|------|------|------|
@@ -155,7 +165,23 @@ Key-Value 结构的系统配置存储，用于持久化 LLM 密钥、系统 Prom
 ## 数据流关系
 
 ```
-用户 @机器人消息
+B站弹幕 WS（LIVE/PREPARING）
+    │
+    ▼
+LiveMonitorService ──提取 roomId──▶ NotificationService
+                                        │
+外部 Webhook（POST /webhook/bili）──────┘
+                                        │
+                                        ▼
+Streamer 查询 ──未找到──▶ 忽略
+    │找到
+    ▼
+5 分钟冷却检查 ──重复──▶ 忽略
+    │通过
+    ▼
+NapCat 发送群通知（@全体 + 封面图）
+
+QQ 群 @机器人消息
     │
     ▼
 IgnoredUser 过滤 ──命中──▶ 丢弃
@@ -165,14 +191,6 @@ ReplyRule 匹配 ──命中──▶ 组合回复发送
     │未命中
     ▼
 ChatSession/ChatMessage ──▶ LLM 适配器 ──▶ 回复发送
-
-B站 Webhook 事件
-    │
-    ▼
-Streamer 查询 ──未找到──▶ 忽略
-    │找到
-    ▼
-NapCat 发送群通知（开播/下播）
 ```
 
 ---
@@ -181,5 +199,7 @@ NapCat 发送群通知（开播/下播）
 
 | 迁移文件 | 说明 |
 |----------|------|
-| `20250219130854_init` | 初始建表：Streamer、ReplyRule、SystemSetting、IgnoredUser |
-| `20250219132623_add_chat_memory` | 新增 ChatSession、ChatMessage 表（LLM 记忆功能） |
+| `20260219135331_add_llm_config` | 新增 ChatSession、ChatMessage 表（LLM 记忆功能） |
+| `20260220130011_init_ignored_user` | 新增 IgnoredUser 表 |
+| `20260503175622_add_room_id` | Streamer 模型新增 `roomId` 字段（弹幕 WS 连接用） |
+| `20260503180839_add_room_info` | Streamer 模型新增 `uname`、`title`、`description`、`cover` 字段（直播间信息） |

@@ -18,4 +18,11 @@ export const config = {
         url: process.env.NAPCAT_URL || 'http://localhost:3000',
         token: process.env.NAPCAT_TOKEN || '',
     },
+    /** 直播监控配置 */
+    liveMonitor: {
+        /** 是否启用内置直播监控（false 则仅依赖外部 webhook） */
+        enabled: process.env.LIVE_MONITOR_ENABLED !== 'false',
+        /** HTTP 轮询间隔（毫秒），作为 WS 的兜底 */
+        pollIntervalMs: Number(process.env.LIVE_MONITOR_POLL_INTERVAL) || 180_000,
+    },
 };

@@ -4,3 +4,5 @@
 export { NapCatClient } from './napcat';
 export { WebhookService } from './webhook';
 export { BotService } from './bot';
+export { NotificationService } from './notification';
+export { LiveMonitorService } from './live-monitor';

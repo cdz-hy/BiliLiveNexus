@@ -5,11 +5,12 @@
 import { FastifyInstance } from 'fastify';
 import { PrismaClient } from '@prisma/client';
 import { BotService } from '../services/bot';
+import { LiveMonitorService } from '../services/live-monitor';
 import { LLMFactory } from '../adapters/llm.adapter';
 import { stats } from '../utils/stats';
 import { logger } from '../utils/logger';
 
-export async function apiRoutes(app: FastifyInstance, db: PrismaClient, bot: BotService) {
+export async function apiRoutes(app: FastifyInstance, db: PrismaClient, bot: BotService, liveMonitor: LiveMonitorService) {
     const llmFactory = new LLMFactory(db);
 
     // ========================
@@ -52,15 +53,50 @@ export async function apiRoutes(app: FastifyInstance, db: PrismaClient, bot: Bot
         return db.streamer.findMany({ orderBy: { updatedAt: 'desc' } });
     });
 
-    app.post('/api/streamers', async (req: any) => {
+    app.post('/api/streamers', async (req: any, reply: any) => {
         const { uid, groupId, name } = req.body;
-        return db.streamer.create({
-            data: { uid: String(uid), groupId: String(groupId), name }
+
+        // 先校验房间是否存在
+        let realRoomId: string;
+        try {
+            realRoomId = await liveMonitor.resolveRoomId(String(uid));
+        } catch (e: any) {
+            logger.warn('API', `Room validation failed for uid ${uid}: ${e.message}`);
+            return reply.code(400).send({ error: e.message || '房间不存在' });
+        }
+
+        // 获取直播间信息
+        const roomInfo = await liveMonitor.fetchRoomInfo(realRoomId);
+
+        const streamer = await db.streamer.create({
+            data: {
+                uid: String(uid),
+                groupId: String(groupId),
+                name: name || undefined,
+                roomId: realRoomId,
+                uname: roomInfo?.uname || undefined,
+                title: roomInfo?.title || undefined,
+                description: roomInfo?.description || undefined,
+                cover: roomInfo?.cover || undefined,
+            }
         });
+        // 触发直播监控连接该房间
+        liveMonitor.addStreamer(String(uid)).catch(err => {
+            logger.error('API', `Failed to start monitoring uid ${uid}: ${err.message}`);
+        });
+        return streamer;
     });
 
     app.delete('/api/streamers/:id', async (req: any) => {
-        return db.streamer.delete({ where: { id: Number(req.params.id) } });
+        const streamer = await db.streamer.findUnique({ where: { id: Number(req.params.id) } });
+        const result = await db.streamer.delete({ where: { id: Number(req.params.id) } });
+        // 删除后检查是否需要断开监控连接
+        if (streamer) {
+            liveMonitor.removeStreamer(streamer.uid).catch(err => {
+                logger.error('API', `Failed to clean up monitoring for uid ${streamer.uid}: ${err.message}`);
+            });
+        }
+        return result;
     });
 
     // ========================

@@ -10,13 +10,18 @@ datasource db {
 
 // 订阅的 B站主播列表
 model Streamer {
-  id        Int      @id @default(autoincrement())
-  uid       String
-  name      String?
-  groupId   String   // 通知发送到的 QQ 群号
-  isLive    Boolean  @default(false)
-  lastLive  DateTime?
-  updatedAt DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  uid         String
+  roomId      String?  // 解析后的真实B站房间号（用于弹幕WS连接）
+  uname       String?  // UP主名称（B站API获取）
+  name        String?  // 用户自定义备注名
+  title       String?  // 当前直播间标题
+  description String?  // 直播间简介
+  cover       String?  // 直播间封面URL
+  groupId     String   // 通知发送到的 QQ 群号
+  isLive      Boolean  @default(false)
+  lastLive    DateTime?
+  updatedAt   DateTime @updatedAt
 }
 
 // 智能回复策略配置

@@ -7,6 +7,8 @@ export const stats = {
     totalMessages: 0,  // 总消息数
     ruleHits: 0,       // 规则命中次数
     webhookHits: 0,    // Webhook 事件数
+    liveEvents: 0,     // WS 检测到的直播事件数
+    activeConnections: 0, // 当前 WS 连接数
     llmCalls: 0,       // LLM 调用次数
 
     /** 获取系统状态摘要（含运行时长与内存占用） */
@@ -28,6 +30,8 @@ export const stats = {
                 totalMessages: stats.totalMessages,
                 ruleHits: stats.ruleHits,
                 webhookHits: stats.webhookHits,
+                liveEvents: stats.liveEvents,
+                activeConnections: stats.activeConnections,
                 llmCalls: stats.llmCalls
             }
         };

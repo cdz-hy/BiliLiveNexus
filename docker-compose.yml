@@ -26,6 +26,9 @@ services:
       - NEXUS_PASSWORD=${NEXUS_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      # 直播监控（内置 WebSocket 连接）
+      - LIVE_MONITOR_ENABLED=${LIVE_MONITOR_ENABLED:-true}
+      - LIVE_MONITOR_POLL_INTERVAL=${LIVE_MONITOR_POLL_INTERVAL:-180000}
     volumes:
       # 持久化数据库与日志
       - ./data:/app/data

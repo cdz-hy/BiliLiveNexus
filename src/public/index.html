@@ -579,7 +579,7 @@
                                             <div class="relative flex-1">
                                                 <i
                                                     class="ri-hashtag absolute left-3 top-2.5 text-gray-400 dark:text-gray-500"></i>
-                                                <input v-model="newStreamer.uid" placeholder="RoomID / UID"
+                                                <input v-model="newStreamer.uid" placeholder="B站直播间号"
                                                     class="w-full bg-gray-50 dark:bg-gray-950/50 border border-gray-200 dark:border-gray-800 text-gray-900 dark:text-white text-sm rounded-xl pl-9 pr-3 py-2.5 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
                                             </div>
                                             <div class="relative flex-1">
@@ -604,37 +604,69 @@
                                     <transition-group name="list" tag="div"
                                         class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 relative min-h-[200px]">
                                         <div v-for="s in streamers" :key="s.id"
-                                            class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800/80 rounded-2xl p-5 card-hover group relative overflow-hidden">
-                                            <div
-                                                :class="['absolute top-0 left-0 w-1 h-full transition-colors', s.isLive ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-700']">
-                                            </div>
-                                            <div class="flex items-center justify-between mb-3 ml-2">
-                                                <span
-                                                    class="text-base font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                                                    {{ s.name || '未命名' }}
-                                                </span>
+                                            class="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800/80 rounded-2xl card-hover group relative overflow-hidden">
+                                            <!-- 封面图 -->
+                                            <div class="relative h-28 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-900 overflow-hidden">
+                                                <img v-if="s.cover && !failedCovers.has(s.id)" :src="s.cover" :alt="s.uname || s.name"
+                                                    class="w-full h-full object-cover"
+                                                    referrerpolicy="no-referrer"
+                                                    @error="failedCovers.add(s.id)">
+                                                <div v-if="s.cover && !failedCovers.has(s.id)" class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
+                                                <!-- 无封面/加载失败时的占位 -->
+                                                <div v-if="!s.cover || failedCovers.has(s.id)" class="absolute inset-0 flex items-center justify-center">
+                                                    <i class="ri-live-line text-3xl text-gray-300 dark:text-gray-700"></i>
+                                                </div>
+                                                <!-- 状态标签 -->
                                                 <span v-if="s.isLive"
-                                                    class="text-[10px] bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-red-500 dark:text-red-400 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 animate-pulse">
+                                                    class="absolute top-2 right-2 text-[10px] bg-red-500 text-white px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 animate-pulse shadow-lg">
                                                     <i class="ri-live-fill"></i> LIVE
                                                 </span>
                                                 <span v-else
-                                                    class="text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5">
+                                                    class="absolute top-2 right-2 text-[10px] bg-black/40 text-white/80 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 backdrop-blur-sm">
                                                     <i class="ri-tv-2-line"></i> OFFLINE
                                                 </span>
+                                                <!-- UP主名称（封面上） -->
+                                                <div v-if="s.cover && !failedCovers.has(s.id)" class="absolute bottom-2 left-3 right-3">
+                                                    <span class="text-sm font-bold text-white drop-shadow">{{ s.uname || s.name || '未命名' }}</span>
+                                                </div>
+                                                <button @click="deleteStreamer(s.id)"
+                                                    class="absolute top-2 left-2 text-white/70 hover:text-white bg-black/30 hover:bg-red-500/80 p-1.5 rounded-lg transition opacity-0 group-hover:opacity-100 backdrop-blur-sm">
+                                                    <i class="ri-delete-bin-line text-xs"></i>
+                                                </button>
                                             </div>
-                                            <div class="ml-2 space-y-2">
-                                                <p
-                                                    class="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2">
-                                                    <i class="ri-hashtag text-gray-400 dark:text-gray-500"></i> UID: {{
-                                                    s.uid }}</p>
-                                                <div class="flex items-center justify-between">
-                                                    <span
-                                                        class="text-[11px] text-gray-500 flex items-center gap-2 bg-gray-50 dark:bg-gray-950/50 px-2 py-1 rounded-md"><i
-                                                            class="ri-group-line"></i> 群: {{ s.groupId }}</span>
-                                                    <button @click="deleteStreamer(s.id)"
-                                                        class="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded-lg transition opacity-0 group-hover:opacity-100 flex items-center gap-1 text-xs">
-                                                        <i class="ri-delete-bin-line"></i>
-                                                    </button>
+                                            <!-- 无封面时的头部 -->
+                                            <div v-if="!s.cover || failedCovers.has(s.id)" class="flex items-center justify-between px-5 pt-4 pb-2">
+                                                <span class="text-base font-bold text-gray-900 dark:text-white">
+                                                    {{ s.uname || s.name || '未命名' }}
+                                                </span>
+                                                <button @click="deleteStreamer(s.id)"
+                                                    class="text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 p-1.5 rounded-lg transition opacity-0 group-hover:opacity-100">
+                                                    <i class="ri-delete-bin-line text-xs"></i>
+                                                </button>
+                                            </div>
+                                            <!-- 信息区 -->
+                                            <div class="px-5 pb-4 pt-2 space-y-2">
+                                                <p v-if="s.title" class="text-xs text-gray-700 dark:text-gray-300 line-clamp-1 flex items-start gap-1.5">
+                                                    <i class="ri-live-line text-red-400 mt-0.5 shrink-0"></i>
+                                                    <span class="truncate">{{ s.title }}</span>
+                                                </p>
+                                                <p v-if="s.name && s.uname && s.name !== s.uname"
+                                                    class="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1.5">
+                                                    <i class="ri-edit-line"></i> 备注: {{ s.name }}
+                                                </p>
+                                                <p v-if="s.description" class="text-[11px] text-gray-400 dark:text-gray-600 line-clamp-1">
+                                                    {{ s.description }}
+                                                </p>
+                                                <div class="flex items-center justify-between pt-1">
+                                                    <div class="flex items-center gap-3">
+                                                        <span class="text-[11px] text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                                                            <i class="ri-hashtag"></i>{{ s.roomId || s.uid }}
+                                                        </span>
+                                                        <span
+                                                            class="text-[11px] text-gray-500 flex items-center gap-1 bg-gray-50 dark:bg-gray-950/50 px-1.5 py-0.5 rounded">
+                                                            <i class="ri-group-line"></i> {{ s.groupId }}
+                                                        </span>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -860,7 +892,9 @@
                                                     'bg-cyan-50 text-cyan-600 border-cyan-200 dark:bg-cyan-500/10 dark:text-cyan-400 dark:border-cyan-500/20': log.source==='Webhook',
                                                     'bg-purple-50 text-purple-600 border-purple-200 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/20': log.source==='LLM',
                                                     'bg-orange-50 text-orange-600 border-orange-200 dark:bg-orange-500/10 dark:text-orange-400 dark:border-orange-500/20': log.source==='NapCat',
-                                                    'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': !['Bot','BotService','Webhook','LLM','NapCat'].includes(log.source),
+                                                    'bg-rose-50 text-rose-600 border-rose-200 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20': log.source==='Notification',
+                                                    'bg-sky-50 text-sky-600 border-sky-200 dark:bg-sky-500/10 dark:text-sky-400 dark:border-sky-500/20': log.source==='LiveMonitor',
+                                                    'bg-gray-100 text-gray-500 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700': !['Bot','BotService','Webhook','LLM','NapCat','Notification','LiveMonitor'].includes(log.source),
                                                 }]">{{ log.source }}</span>
                                                 <span
                                                     class="text-gray-600 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors pt-0.5">{{
@@ -904,7 +938,7 @@
     </div>
 
     <script>
-        const { createApp, ref, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
+        const { createApp, ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } = Vue;
 
         createApp({
             setup() {
@@ -998,6 +1032,7 @@
                 // ========== 数据 ==========
                 const stats = ref({});
                 const streamers = ref([]);
+                const failedCovers = reactive(new Set());
                 const rules = ref([]);
                 const recentLogs = ref([]);
                 const ignoredUsers = ref([]);
@@ -1018,12 +1053,19 @@
                     { title: '总消息数', value: stats.value.counts?.totalMessages, icon: 'ri-message-3-line', barClass: 'bg-gradient-to-r from-purple-500 to-pink-500', iconBg: 'bg-purple-50 dark:bg-purple-500/10 text-purple-500 dark:text-purple-400' },
                     { title: '规则命中', value: stats.value.counts?.ruleHits, icon: 'ri-check-double-line', barClass: 'bg-gradient-to-r from-emerald-500 to-teal-500', iconBg: 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-500 dark:text-emerald-400' },
                     { title: 'AI 调用', value: stats.value.counts?.llmCalls, icon: 'ri-robot-2-line', barClass: 'bg-gradient-to-r from-amber-500 to-orange-500', iconBg: 'bg-amber-50 dark:bg-amber-500/10 text-amber-500 dark:text-amber-400' },
+                    { title: '直播事件', value: stats.value.counts?.liveEvents, icon: 'ri-live-line', barClass: 'bg-gradient-to-r from-red-500 to-rose-500', iconBg: 'bg-red-50 dark:bg-red-500/10 text-red-500 dark:text-red-400' },
+                    { title: '活跃连接', value: stats.value.counts?.activeConnections, icon: 'ri-link', barClass: 'bg-gradient-to-r from-sky-500 to-blue-500', iconBg: 'bg-sky-50 dark:bg-sky-500/10 text-sky-500 dark:text-sky-400' },
                 ]);
 
                 // ========== 图表 ==========
                 let memoryChart = null;
 
                 const refreshDashboard = async () => {
+                    try {
+                        // 始终刷新主播数据（直播状态、封面等实时变化）
+                        const streamerResp = await axios.get('/api/streamers');
+                        streamers.value = streamerResp.data;
+                    } catch { }
                     if (tab.value === 'dashboard') {
                         try {
                             const s = await axios.get('/api/stats');
@@ -1095,9 +1137,9 @@
                     catch (e) { toast('测试出错: ' + (e.response?.data?.message || e.message), 'error'); }
                 };
                 const addStreamer = async () => {
-                    if (!newStreamer.value.uid || !newStreamer.value.groupId) { toast('请填写 UID 和群号', 'warn'); return; }
+                    if (!newStreamer.value.uid || !newStreamer.value.groupId) { toast('请填写直播间号和群号', 'warn'); return; }
                     try { await axios.post('/api/streamers', newStreamer.value); newStreamer.value = { uid: '', name: '', groupId: '' }; toast('主播添加成功', 'success'); loadData(); }
-                    catch (e) { toast('添加失败: ' + (e.response?.data?.message || e.message), 'error'); }
+                    catch (e) { toast('添加失败: ' + (e.response?.data?.error || e.response?.data?.message || e.message), 'error'); }
                 };
                 const deleteStreamer = async (id) => {
                     if (!confirm('确定删除该主播？')) return;
@@ -1146,7 +1188,7 @@
                     aiConfig, sparkForm, openaiForm,
                     newStreamer, newRule, newIgnoredUser,
                     saveBaseConfig, saveSparkConfig, saveOpenaiConfig, testConnection,
-                    addStreamer, deleteStreamer, addRule, deleteRule, addIgnoredUser, deleteIgnoredUser,
+                    failedCovers, addStreamer, deleteStreamer, addRule, deleteRule, addIgnoredUser, deleteIgnoredUser,
                 };
             }
         }).mount('#app');
