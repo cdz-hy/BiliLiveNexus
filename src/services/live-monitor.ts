@@ -11,16 +11,68 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { LiveWS } from 'bilibili-live-ws';
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import * as crypto from 'crypto';
 import { NotificationService } from './notification';
 import { logger } from '../utils/logger';
 import { stats } from '../utils/stats';
 import { config } from '../config';
 
-// ========== Wbi 签名 ==========
+// ========== 统一 HTTP 客户端（参照 BililiveRecorder HttpApiClient） ==========
 
-/** Wbi 密钥置换表（BililiveRecorder 使用的固定表） */
+const HTTP_HEADERS = {
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Accept-Language': 'zh-CN',
+    'Origin': 'https://live.bilibili.com',
+    'Referer': 'https://live.bilibili.com/',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+};
+
+/** 生成随机 buvid3（模拟浏览器指纹） */
+function generateBuvid3(): string {
+    const hex = crypto.randomBytes(16).toString('hex').toUpperCase();
+    return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}infoc`;
+}
+
+const buvid3 = generateBuvid3();
+
+/** 统一的 axios 实例，所有 B站 API 请求共用 */
+const httpClient: AxiosInstance = axios.create({
+    timeout: 10000,
+    headers: {
+        ...HTTP_HEADERS,
+        'Cookie': `buvid3=${buvid3}`,
+    },
+});
+
+/** HTTP 412 反爬错误（特殊标记，用于延长重试间隔） */
+class Http412Error extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'Http412Error';
+    }
+}
+
+/**
+ * 带 412 检测的 HTTP GET
+ * BililiveRecorder 专门检测 412 状态码（反爬/风控），抛出特殊异常
+ */
+async function httpGet(url: string): Promise<any> {
+    try {
+        const resp = await httpClient.get(url);
+        return resp.data;
+    } catch (e: any) {
+        if (e.response?.status === 412) {
+            logger.warn('LiveMonitor', `HTTP 412 (anti-scraping) for ${url.substring(0, 80)}...`);
+            throw new Http412Error('HTTP 412: B站反爬限制，等待 1 小时后重试');
+        }
+        throw e;
+    }
+}
+
+// ========== Wbi 签名（参照 BililiveRecorder Wbi.cs） ==========
+
+/** Wbi 密钥置换表 */
 const WBI_KEY_MAP = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
     27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
@@ -30,12 +82,13 @@ const WBI_KEY_MAP = [
 
 /** Wbi 签名密钥缓存 */
 let wbiKeyCache: { key: string; timestamp: number } | null = null;
-const WBI_KEY_CACHE_TTL = 30 * 60 * 1000; // 30 分钟
+const WBI_KEY_CACHE_TTL = 4 * 60 * 60 * 1000; // 4 小时（与 BililiveRecorder 一致）
+
+/** 并发锁：防止多个房间同时刷新 Wbi 密钥 */
+let wbiRefreshPromise: Promise<string> | null = null;
 
 /**
  * 从 wbi_img URL 提取文件名（不含扩展名）
- * 例: "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"
- *   → "7cd084941338484aae1ad9425b84077c"
  */
 function extractFilename(url: string): string {
     const parts = url.split('/');
@@ -52,38 +105,51 @@ function mixKey(imgFilename: string, subFilename: string): string {
 }
 
 /**
- * 获取 Wbi 签名密钥（带缓存）
+ * 获取 Wbi 签名密钥（带缓存 + 并发保护）
+ * 双重检查锁：多个并发调用只触发一次 API 请求
  */
 async function getWbiKey(): Promise<string> {
+    // 快速路径：缓存有效
     if (wbiKeyCache && Date.now() - wbiKeyCache.timestamp < WBI_KEY_CACHE_TTL) {
         return wbiKeyCache.key;
     }
 
-    const resp = await axios.get('https://api.bilibili.com/x/web-interface/nav', {
-        timeout: 10000,
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-            'Referer': 'https://www.bilibili.com',
-        }
-    });
-
-    const wbiImg = resp.data?.data?.wbi_img;
-    const imgFilename = extractFilename(wbiImg?.img_url || '');
-    const subFilename = extractFilename(wbiImg?.sub_url || '');
-
-    if (!imgFilename || !subFilename) {
-        throw new Error('Failed to get Wbi key from nav API');
+    // 并发保护：如果已有刷新请求在进行中，等待它的结果
+    if (wbiRefreshPromise) {
+        return wbiRefreshPromise;
     }
 
-    const key = mixKey(imgFilename, subFilename);
-    wbiKeyCache = { key, timestamp: Date.now() };
-    logger.info('LiveMonitor', `Wbi key refreshed: ${key.substring(0, 8)}...`);
-    return key;
+    // 创建刷新 Promise，其他并发调用会等待这个
+    wbiRefreshPromise = (async () => {
+        try {
+            // 双重检查：等待期间可能已被其他调用刷新
+            if (wbiKeyCache && Date.now() - wbiKeyCache.timestamp < WBI_KEY_CACHE_TTL) {
+                return wbiKeyCache.key;
+            }
+
+            const data = await httpGet('https://api.bilibili.com/x/web-interface/nav');
+            const wbiImg = data?.data?.wbi_img;
+            const imgFilename = extractFilename(wbiImg?.img_url || '');
+            const subFilename = extractFilename(wbiImg?.sub_url || '');
+
+            if (!imgFilename || !subFilename) {
+                throw new Error('Failed to get Wbi key from nav API');
+            }
+
+            const key = mixKey(imgFilename, subFilename);
+            wbiKeyCache = { key, timestamp: Date.now() };
+            logger.info('LiveMonitor', `Wbi key refreshed: ${key.substring(0, 8)}...`);
+            return key;
+        } finally {
+            wbiRefreshPromise = null;
+        }
+    })();
+
+    return wbiRefreshPromise;
 }
 
 /**
  * 对请求参数进行 Wbi 签名
- * 参照 BililiveRecorder Wbi.cs 的实现
  */
 async function signParams(params: Record<string, string | number>): Promise<string> {
     const key = await getWbiKey();
@@ -107,14 +173,6 @@ async function signParams(params: Record<string, string | number>): Promise<stri
     return `${query}&w_rid=${w_rid}`;
 }
 
-/**
- * 生成随机 buvid3（模拟浏览器指纹）
- */
-function generateBuvid3(): string {
-    const hex = crypto.randomBytes(16).toString('hex').toUpperCase();
-    return `${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}infoc`;
-}
-
 // ========== 连接状态 ==========
 
 /** 每个房间的连接状态 */
@@ -132,13 +190,13 @@ export class LiveMonitorService {
     private resolvedRooms: Map<string, string> = new Map();
     /** 轮询定时器 */
     private pollTimer: NodeJS.Timeout | null = null;
-    /** buvid3（生成一次，所有连接共用） */
-    private buvid3: string = generateBuvid3();
 
     /** 重连参数（参照 BililiveRecorder TimingDanmakuRetry = 9s） */
     private static readonly RECONNECT_DELAY = 9000;
     /** 连接持续超过此时长则立即重连（不等待） */
     private static readonly IMMEDIATE_RECONNECT_THRESHOLD = 60000;
+    /** HTTP 412 反爬冷却时间（1 小时） */
+    private static readonly HTTP_412_COOLDOWN = 60 * 60 * 1000;
 
     constructor(private db: PrismaClient, private notification: NotificationService) { }
 
@@ -232,15 +290,11 @@ export class LiveMonitorService {
      * 通过 B站 API 解析真实房间号
      */
     async resolveRoomId(inputId: string): Promise<string> {
-        const resp = await axios.get(
-            `https://api.live.bilibili.com/room/v1/Room/room_init?id=${inputId}`,
-            { timeout: 10000 }
-        );
-        const code = resp.data?.code;
-        if (code !== 0) {
-            throw new Error(resp.data?.message || `房间 ${inputId} 不存在`);
+        const data = await httpGet(`https://api.live.bilibili.com/room/v1/Room/room_init?id=${inputId}`);
+        if (data?.code !== 0) {
+            throw new Error(data?.message || `房间 ${inputId} 不存在`);
         }
-        const realId = resp.data?.data?.room_id;
+        const realId = data?.data?.room_id;
         if (!realId) {
             throw new Error(`房间 ${inputId} 不存在`);
         }
@@ -280,20 +334,12 @@ export class LiveMonitorService {
         });
 
         const url = `https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?${signedQuery}`;
-        const resp = await axios.get(url, {
-            timeout: 10000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                'Referer': 'https://live.bilibili.com',
-                'Origin': 'https://live.bilibili.com',
-                'Cookie': `buvid3=${this.buvid3}`,
-            }
-        });
+        const resp = await httpGet(url);
 
-        const data = resp.data?.data;
+        const data = resp?.data;
         if (!data?.token) {
-            logger.error('LiveMonitor', `getDanmakuConf for room ${roomId}: no token. code=${resp.data?.code}, msg=${resp.data?.message}`);
-            throw new Error(`getDanmuInfo failed: code=${resp.data?.code}`);
+            logger.error('LiveMonitor', `getDanmakuConf for room ${roomId}: no token. code=${resp?.code}, msg=${resp?.message}`);
+            throw new Error(`getDanmuInfo failed: code=${resp?.code}`);
         }
 
         // 从 host_list 选择服务器（排除默认 broadcastlv.chat.bilibili.com）
@@ -338,7 +384,8 @@ export class LiveMonitorService {
                 conn.connected = false;
                 stats.wsReconnects++;
                 logger.warn('LiveMonitor', `Room ${realRoomId}: Connection closed (code=${code}, wasConnected=${wasConnected})`);
-                this.scheduleReconnect(realRoomId, conn);
+                // close 事件 = 连接曾成功建立，可按策略决定是否立即重连
+                this.scheduleReconnect(realRoomId, conn, true);
             });
 
             ws.on('error', (err?: Error) => {
@@ -425,21 +472,35 @@ export class LiveMonitorService {
             logger.info('LiveMonitor', `Connecting to room ${realRoomId}...`);
         } catch (e: any) {
             logger.error('LiveMonitor', `Failed to create connection for room ${realRoomId}: ${e.message}`);
-            this.scheduleReconnect(realRoomId, conn);
+            this.scheduleReconnect(realRoomId, conn, false, e);
         }
     }
 
     /**
      * 重连策略（参照 BililiveRecorder）：
-     *   连接持续 > 1 分钟 → 立即重连（说明连接是稳定的，只是正常断开）
-     *   连接持续 ≤ 1 分钟 → 等待 9 秒后重连（避免快速重连风暴）
+     *   close 事件（连接曾成功）→ 连接持续 > 1 分钟立即重连，否则等 9 秒
+     *   createConnection 失败（从未成功）→ 始终等 9 秒，避免网络中断时风暴
+     *   HTTP 412 反爬 → 等待 1 小时
      *   永不放弃，无限重试
      */
-    private scheduleReconnect(realRoomId: string, conn: RoomConnection): void {
+    private scheduleReconnect(realRoomId: string, conn: RoomConnection, immediate: boolean = false, error?: Error): void {
         if (conn.reconnectTimer) return;
 
+        // HTTP 412 反爬：长冷却
+        if (error instanceof Http412Error) {
+            const delay = LiveMonitorService.HTTP_412_COOLDOWN;
+            logger.warn('LiveMonitor', `Room ${realRoomId}: HTTP 412 detected, cooling down for ${delay / 60000} minutes...`);
+            conn.reconnectTimer = setTimeout(async () => {
+                conn.reconnectTimer = null;
+                if (conn.ws) { try { conn.ws.close(); } catch { } conn.ws = null; }
+                await this.createConnection(realRoomId, conn);
+            }, delay);
+            return;
+        }
+
         const duration = conn.connectedAt > 0 ? Date.now() - conn.connectedAt : 0;
-        const delay = duration > LiveMonitorService.IMMEDIATE_RECONNECT_THRESHOLD
+        // immediate=true 仅在 close 事件中传入，且连接曾持续 > 1 分钟
+        const delay = (immediate && duration > LiveMonitorService.IMMEDIATE_RECONNECT_THRESHOLD)
             ? 0
             : LiveMonitorService.RECONNECT_DELAY;
 
@@ -503,12 +564,12 @@ export class LiveMonitorService {
     } | null> {
         try {
             // 并行请求房间信息和主播信息
-            const [roomResp, anchorResp] = await Promise.all([
-                axios.get(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`, { timeout: 10000 }),
-                axios.get(`https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid=${roomId}`, { timeout: 10000 }).catch(() => null)
+            const [roomData, anchorData] = await Promise.all([
+                httpGet(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`),
+                httpGet(`https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid=${roomId}`).catch(() => null)
             ]);
 
-            const data = roomResp.data?.data;
+            const data = roomData?.data;
             if (!data) return null;
 
             // 封面 URL：B站返回完整 https:// 或协议相对路径
@@ -516,7 +577,7 @@ export class LiveMonitorService {
             if (cover.startsWith('//')) cover = 'https:' + cover;
 
             // UP主名称：从 get_anchor_in_room 获取
-            const uname = anchorResp?.data?.data?.info?.uname || '';
+            const uname = anchorData?.data?.info?.uname || '';
 
             return {
                 uname,
@@ -564,11 +625,8 @@ export class LiveMonitorService {
      */
     async getRoomLiveStatus(roomId: string): Promise<number> {
         try {
-            const resp = await axios.get(
-                `https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`,
-                { timeout: 10000 }
-            );
-            return resp.data?.data?.live_status ?? -1;
+            const data = await httpGet(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`);
+            return data?.data?.live_status ?? -1;
         } catch {
             return -1;
         }
