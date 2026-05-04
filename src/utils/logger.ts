@@ -4,10 +4,10 @@
  */
 
 interface LogEntry {
-    level: string;    // 日志级别：INFO / WARN / ERROR
+    level: string;    // 日志级别：INFO / WARN / ERROR / DEBUG
     message: string;  // 日志内容（已脱敏）
     timestamp: string; // 时间戳
-    source: string;   // 来源模块：System / Bot / Webhook / LLM 等
+    source: string;   // 来源模块：System / Bot / Webhook / LLM / LiveMonitor 等
 }
 
 /** 最大缓存条数 */
@@ -47,20 +47,22 @@ function maskSensitiveInfo(str: string): string {
  * @param level 日志级别
  * @param source 来源模块
  * @param msg 日志内容
+ * @param storeInBuffer 是否存入内存缓冲区（debug 默认不存，避免刷屏）
  */
-function pushLog(level: 'INFO' | 'WARN' | 'ERROR', source: string, msg: any) {
+function pushLog(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', source: string, msg: any, storeInBuffer = true) {
     const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
     let message = typeof msg === 'object' ? JSON.stringify(msg, null, 2) : String(msg);
 
     // 入库前强制脱敏
     message = maskSensitiveInfo(message);
 
-    // 超限淘汰最旧条目
-    if (logBuffer.length >= MAX_LOGS) {
-        logBuffer.shift();
+    // 存入内存缓冲区（DEBUG 级别默认不存）
+    if (storeInBuffer) {
+        if (logBuffer.length >= MAX_LOGS) {
+            logBuffer.shift();
+        }
+        logBuffer.push({ level, source, message, timestamp });
     }
-
-    logBuffer.push({ level, source, message, timestamp });
 
     // 同步输出到标准输出
     if (level === 'ERROR') {
@@ -75,6 +77,8 @@ export const logger = {
     info: (source: string, msg: any) => pushLog('INFO', source, msg),
     warn: (source: string, msg: any) => pushLog('WARN', source, msg),
     error: (source: string, msg: any) => pushLog('ERROR', source, msg),
+    /** 调试日志（仅输出到控制台，不存入内存缓冲区） */
+    debug: (source: string, msg: any) => pushLog('DEBUG', source, msg, false),
     /** 获取最近日志（最新在前） */
     getRecentLogs: () => [...logBuffer].reverse()
 };

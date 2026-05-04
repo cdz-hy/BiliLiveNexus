@@ -9,6 +9,7 @@ export const stats = {
     webhookHits: 0,    // Webhook 事件数
     liveEvents: 0,     // WS 检测到的直播事件数
     activeConnections: 0, // 当前 WS 连接数
+    wsReconnects: 0,   // WS 断线重连次数
     llmCalls: 0,       // LLM 调用次数
 
     /** 获取系统状态摘要（含运行时长与内存占用） */
@@ -32,6 +33,7 @@ export const stats = {
                 webhookHits: stats.webhookHits,
                 liveEvents: stats.liveEvents,
                 activeConnections: stats.activeConnections,
+                wsReconnects: stats.wsReconnects,
                 llmCalls: stats.llmCalls
             }
         };

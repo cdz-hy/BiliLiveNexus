@@ -6,3 +6,4 @@ logs/
 *.db-journal
 *.log
 .env
+.claude/
