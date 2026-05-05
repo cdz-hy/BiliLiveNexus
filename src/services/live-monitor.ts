@@ -268,8 +268,9 @@ export class LiveMonitorService {
      */
     private async syncLiveStatus(roomId: string, uid?: string): Promise<void> {
         try {
-            const liveStatus = await this.getRoomLiveStatus(roomId);
-            const isLive = liveStatus === 1;
+            const info = await this.fetchRoomInfo(roomId);
+            if (!info) return;
+            const isLive = info.liveStatus === 1;
 
             const where = uid
                 ? { OR: [{ uid }, { roomId }] }
@@ -280,7 +281,7 @@ export class LiveMonitorService {
                 data: { isLive }
             });
 
-            logger.info('LiveMonitor', `Synced live status for room ${roomId}: ${isLive ? 'LIVE' : 'OFFLINE'} (live_status=${liveStatus})`);
+            logger.info('LiveMonitor', `Synced live status for room ${roomId}: ${isLive ? 'LIVE' : 'OFFLINE'} (live_status=${info.liveStatus})`);
         } catch (e: any) {
             logger.error('LiveMonitor', `Failed to sync live status for room ${roomId}: ${e.message}`);
         }
@@ -399,10 +400,34 @@ export class LiveMonitorService {
                     'ONLINE_RANK_COUNT', 'WIDGET_BANNER', 'ENTRY_EFFECT', 'INTERACT_WORD',
                     'WATCHED_CHANGE', 'LIKE_INFO_V3_UPDATE', 'ACTIVITY_BANNER_UPDATE',
                     'ROOM_REAL_TIME_MESSAGE_UPDATE', 'HOT_RANK_CHANGED', 'POPULAR_RANK_CHANGED',
-                    'COMBO_SEND', 'NOTICE_MSG', 'SYS_MSG', 'STOP_LIVE_ROOM_LIST',
+                    'COMBO_SEND', 'NOTICE_MSG', 'SYS_MSG',
                     'LIKE_INFO_V3_CLICK', 'TOAST_MESSAGE', 'RECOMMEND_CARD', 'ROOM_SKIN_MSG'];
                 if (!highFreqCmds.includes(cmd)) {
                     logger.debug('LiveMonitor', `Room ${realRoomId}: cmd=${cmd}`);
+                }
+            });
+
+            // === 系统广播：批量下播房间列表（补充下播检测） ===
+            ws.on('STOP_LIVE_ROOM_LIST', async (msg: any) => {
+                const roomList: number[] = msg?.data?.room_id_list || [];
+                if (roomList.length === 0) return;
+                const monitoredRoomIds = Array.from(this.connections.keys()).map(Number);
+                const affected = roomList.filter(id => monitoredRoomIds.includes(id));
+                if (affected.length === 0) return;
+                logger.info('LiveMonitor', `STOP_LIVE_ROOM_LIST: ${affected.length} monitored room(s) went offline`);
+                for (const id of affected) {
+                    const roomId = String(id);
+                    try {
+                        const streamers = await this.db.streamer.findMany({
+                            where: { OR: [{ roomId }] }
+                        });
+                        const anyLive = streamers.some((s: any) => s.isLive);
+                        if (anyLive) {
+                            await this.notification.notifyStreamEvent(roomId, 'PREPARING');
+                        }
+                    } catch (e: any) {
+                        logger.error('LiveMonitor', `Error handling STOP_LIVE_ROOM_LIST for room ${roomId}: ${e.message}`);
+                    }
                 }
             });
 
@@ -558,32 +583,34 @@ export class LiveMonitorService {
 
     /**
      * 获取直播间详细信息
+     * 使用 Wbi 签名调用 getInfoByRoom API（与 BililiveRecorder GetRoomInfoAsync 一致）
+     * 单次请求获取全部信息（房间信息 + 主播信息 + 直播状态），无需额外请求
      */
     async fetchRoomInfo(roomId: string): Promise<{
-        uname: string; title: string; description: string; cover: string
+        uname: string; title: string; description: string; cover: string; liveStatus: number
     } | null> {
         try {
-            // 并行请求房间信息和主播信息
-            const [roomData, anchorData] = await Promise.all([
-                httpGet(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`),
-                httpGet(`https://api.live.bilibili.com/live_user/v1/UserInfo/get_anchor_in_room?roomid=${roomId}`).catch(() => null)
-            ]);
-
-            const data = roomData?.data;
+            const signedQuery = await signParams({
+                room_id: roomId,
+                web_location: '444.8',
+            });
+            const resp = await httpGet(`https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom?${signedQuery}`);
+            const data = resp?.data;
             if (!data) return null;
 
+            const roomInfo = data.room_info || {};
+            const anchorInfo = data.anchor_info?.base_info || {};
+
             // 封面 URL：B站返回完整 https:// 或协议相对路径
-            let cover = data.user_cover || '';
+            let cover = roomInfo.cover || '';
             if (cover.startsWith('//')) cover = 'https:' + cover;
 
-            // UP主名称：从 get_anchor_in_room 获取
-            const uname = anchorData?.data?.info?.uname || '';
-
             return {
-                uname,
-                title: data.title || '',
-                description: data.description || '',
-                cover
+                uname: anchorInfo.uname || '',
+                title: roomInfo.title || '',
+                description: roomInfo.description || '',
+                cover,
+                liveStatus: roomInfo.live_status ?? -1,
             };
         } catch (e: any) {
             logger.error('LiveMonitor', `fetchRoomInfo failed for ${roomId}: ${e.message}`);
@@ -621,28 +648,17 @@ export class LiveMonitorService {
     }
 
     /**
-     * 获取房间直播状态（0=未开播, 1=直播中, 2=轮播）
-     */
-    async getRoomLiveStatus(roomId: string): Promise<number> {
-        try {
-            const data = await httpGet(`https://api.live.bilibili.com/room/v1/Room/get_info?id=${roomId}`);
-            return data?.data?.live_status ?? -1;
-        } catch {
-            return -1;
-        }
-    }
-
-    /**
      * HTTP 轮询兜底：定期检查所有监控房间的直播状态
-     * 对比 B站 API 返回的 live_status 与数据库中的 isLive 标记
+     * 参照 BililiveRecorder Timer_Elapsed → FetchRoomInfoAsync
+     * 使用 getInfoByRoom API（Wbi 签名），一次请求获取房间信息 + 直播状态
      * live_status: 0=未开播, 1=直播中, 2=轮播（视为未开播）
      */
     private startPolling(intervalMs: number): void {
         this.pollTimer = setInterval(async () => {
             for (const [roomId] of this.connections) {
                 try {
-                    const roomStatus = await this.getRoomLiveStatus(roomId);
-                    if (roomStatus === -1) continue;
+                    const info = await this.fetchRoomInfo(roomId);
+                    if (!info || info.liveStatus === -1) continue;
 
                     const streamers = await this.db.streamer.findMany({
                         where: { OR: [{ uid: roomId }, { roomId }] }
@@ -650,14 +666,22 @@ export class LiveMonitorService {
                     const anyLive = streamers.some((s: any) => s.isLive);
 
                     // live_status=1 才算直播中，0 和 2（轮播）都算未开播
-                    const isActuallyLive = roomStatus === 1;
+                    const isActuallyLive = info.liveStatus === 1;
 
                     if (isActuallyLive && !anyLive) {
                         logger.warn('LiveMonitor', `Polling fallback: Room ${roomId} is LIVE but DB says offline`);
-                        await this.updateRoomInfo(roomId);
+                        // fetchRoomInfo 已获取最新信息，直接写入 DB
+                        await this.db.streamer.updateMany({
+                            where: { OR: [{ roomId }] },
+                            data: {
+                                title: info.title,
+                                cover: info.cover,
+                                uname: info.uname,
+                            }
+                        });
                         await this.notification.notifyStreamEvent(roomId, 'LIVE');
                     } else if (!isActuallyLive && anyLive) {
-                        logger.warn('LiveMonitor', `Polling fallback: Room ${roomId} is offline (live_status=${roomStatus}) but DB says LIVE`);
+                        logger.warn('LiveMonitor', `Polling fallback: Room ${roomId} is offline (live_status=${info.liveStatus}) but DB says LIVE`);
                         await this.notification.notifyStreamEvent(roomId, 'PREPARING');
                     }
                 } catch (e: any) {

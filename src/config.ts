@@ -22,7 +22,7 @@ export const config = {
     liveMonitor: {
         /** 是否启用内置直播监控（false 则仅依赖外部 webhook） */
         enabled: process.env.LIVE_MONITOR_ENABLED !== 'false',
-        /** HTTP 轮询间隔（毫秒），作为 WS 的兜底 */
-        pollIntervalMs: Number(process.env.LIVE_MONITOR_POLL_INTERVAL) || 180_000,
+        /** HTTP 轮询间隔（毫秒），作为 WS 的兜底（与 BililiveRecorder TimingCheckInterval=60s 一致） */
+        pollIntervalMs: Number(process.env.LIVE_MONITOR_POLL_INTERVAL) || 60_000,
     },
 };
